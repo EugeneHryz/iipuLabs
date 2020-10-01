@@ -4,6 +4,7 @@
 #include <fileapi.h>
 #include <vector>
 #include <iomanip>
+#include <ntddscsi.h>
 
 using namespace std;
 
@@ -13,6 +14,117 @@ vector<string> busTypes = { "Unknown", "Scsi", "Atapi", "Ata", "1394",
 							"FileBackedVirtual", "Spaces" };
 
 #define BUF_SIZE 256
+
+#define BYTE_SIZE 8
+
+DWORD ShowSupportedStandarts(HANDLE hDrive) {
+	
+	UCHAR buffer[512 + sizeof(ATA_PASS_THROUGH_EX)];
+	ZeroMemory(buffer, sizeof(buffer));
+	DWORD returnedBytes;
+
+	ATA_PASS_THROUGH_EX& ATA = *(ATA_PASS_THROUGH_EX*)buffer;
+	ATA.Length = sizeof(ATA);
+	ATA.TimeOutValue = 10;
+	ATA.DataTransferLength = 512;
+	ATA.DataBufferOffset = sizeof(ATA_PASS_THROUGH_EX);
+	ATA.AtaFlags = ATA_FLAGS_DATA_IN;
+
+	IDEREGS* ideRegs = (IDEREGS*)ATA.CurrentTaskFile;
+	ideRegs->bCommandReg = 0xEC;
+
+	if (!DeviceIoControl(hDrive, IOCTL_ATA_PASS_THROUGH, &ATA, sizeof(buffer), 
+		&ATA, sizeof(buffer), &returnedBytes, NULL)) {
+		
+		return GetLastError();
+	}
+
+	WORD* data = (WORD*)(buffer + sizeof(ATA_PASS_THROUGH_EX));
+	int i, bitArray[2 * BYTE_SIZE];
+
+	cout << "Supported standarts:\n\n";
+
+	unsigned short ataSupportByte = data[80];
+	i = 2 * BYTE_SIZE;
+	short wordMask = 1;
+	for (i = 0; i < 2 * BYTE_SIZE; i++) {
+
+		if (wordMask & ataSupportByte)
+			bitArray[i] = 1;
+		else
+			bitArray[i] = 0;
+		
+		wordMask = wordMask << 1;
+	}
+
+	cout << setw(20) << "ATA Support: ";
+	for (i = 8; i >= 4; i--) {
+		
+		if (bitArray[i] == 1) {
+			
+			cout << "ATA" << i;
+			if (i != 4) {
+				cout << " ";
+			}
+			else
+				cout << endl;
+		}
+	}
+
+	unsigned short pioSupportByte = data[63];
+	wordMask = 1;
+	for (i = 0; i < 2 * BYTE_SIZE; i++) {
+
+		if (wordMask & pioSupportByte)
+			bitArray[i] = 1;
+		else
+			bitArray[i] = 0;
+
+		wordMask = wordMask << 1;
+	}
+
+	cout << setw(20) << "PIO Support: ";
+	for (i = 0; i < 2; i++) {
+		
+		if (bitArray[i] == 1) {
+			
+			cout << "PIO" << i + 3;
+			if (i != 1) {
+				cout << " ";
+			}
+			else
+				cout << endl;
+		}
+	}
+
+	unsigned short dmaSupportByte = data[63];
+	wordMask = 1;
+	for (i = 0; i < 2 * BYTE_SIZE; i++) {
+
+		if (wordMask & dmaSupportByte)
+			bitArray[i] = 1;
+		else
+			bitArray[i] = 0;
+
+		wordMask = wordMask << 1;
+	}
+	
+	cout << setw(20) << "DMA Support: ";
+	for (i = 0; i < 8; i++) {
+		
+		if (bitArray[i] == 1) {
+			
+			cout << "DMA" << i;
+			if (i != 2) {
+				cout << " ";
+			}
+			else
+				cout << endl;
+		}
+	}
+
+	return 0;
+}
 
 DWORD PrintDriveDescriptorInfo(HANDLE hDevice) {
 
@@ -28,7 +140,7 @@ DWORD PrintDriveDescriptorInfo(HANDLE hDevice) {
 		return GetLastError();
 	}
 
-	if (dtd.TrimEnabled == true) {
+	if (dtd.TrimEnabled == TRUE) {
 		cout << "Drive type: SSD" << endl;
 	}
 	else
@@ -62,26 +174,9 @@ DWORD PrintDriveDescriptorInfo(HANDLE hDevice) {
 	if (sdd->ProductRevisionOffset != 0) { cout << "Drive firmware: " << outBuffer + sdd->ProductRevisionOffset << endl; }
 	cout << "Drive bus type: " << busTypes.at(sdd->BusType) << endl;
 
-	// drive transfer mode
-	spq.PropertyId = StorageAdapterProperty;
-
-	STORAGE_ADAPTER_DESCRIPTOR sad;
-
-	if (!DeviceIoControl(hDevice, IOCTL_STORAGE_QUERY_PROPERTY, &spq, sizeof(STORAGE_PROPERTY_QUERY),
-		&sad, sizeof(STORAGE_ADAPTER_DESCRIPTOR), &bytesReturned, NULL)) {
-
-		return GetLastError();
-	}
-
-	cout << "Supported modes: ";
-	if (sad.AdapterUsesPio) {
-		cout << "PIO";
-	}
-	cout << endl;
-
 	delete[]outBuffer;
-
-	return 0;
+	
+	return ShowSupportedStandarts(hDevice);;
 }
 
 vector<string> GetAllLogicalDrives() {
@@ -134,7 +229,7 @@ int main() {
 	int i = 0;
 	DWORD result;
 	
-	while ((hDevice = CreateFile((driveName + to_string(i)).c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+	while ((hDevice = CreateFile((driveName + to_string(i)).c_str(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
 		NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL)) != INVALID_HANDLE_VALUE) {
 
 		cout << "Drive name: PhysicalDrive" << to_string(i) << endl;
@@ -145,8 +240,11 @@ int main() {
 		result = PrintMemoryUsage(GetAllLogicalDrives());
 		if (result != 0) { return result; }
 		
+		CloseHandle(hDevice);
 		i++;
 	}
+
+	system("pause");
 
 	return 0;
 }
